@@ -24,8 +24,8 @@ float distalDist( vec4<float> pos ) {
 }
 float nearDist( vec4<float> pos ) {
 	float dist_2 = distalDist(pos);
-	if( dist_2 < 1 )
-		dist_2 = 1;
+	if( dist_2 < 0.05 )
+		dist_2 = 0.05;
 	return 1/dist_2;
 }
 

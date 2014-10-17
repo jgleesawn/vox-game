@@ -7,7 +7,7 @@ enum bProps {
 	bDensity,
 	bRigidity,
 	bPermeability,
-	bLast
+	bAllowed
 };
 
 class Block {

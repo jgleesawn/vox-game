@@ -28,6 +28,7 @@ Chunk::setDensityDist(vec4<float> Origin, DistributionFunction func) {
 				pos = {i,j,k,0};
 				subeq(pos,Origin);
 				m_Blocks[i][j][k][bDensity] = func(pos);
+				m_Blocks[i][j][k][bAllowed] = 1.0;
 			}
 		}
 	}
