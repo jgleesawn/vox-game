@@ -2,46 +2,53 @@
 
 ChunkEngine::ChunkEngine(CLEngine * cle_in) : PhysicsEngine("game/voxel/physics.cl", cle_in) { 
 	int err;
-	LoadKernel("MovementCompute");
+	LoadKernel("clearBuffer");
 
+	LoadKernel("ChunkKernel");
+	input.back().push_back( clCreateBuffer(cle->getContext(), CL_MEM_READ_WRITE, 6*sizeof(cl_int), NULL, &err ));
+	if( err < 0 ) { perror("Could not create int buffer."); exit(1); }
+
+	LoadKernel("InterChunkKernel");
 	input.back().push_back( clCreateBuffer(cle->getContext(), CL_MEM_READ_ONLY, sizeof(cl_int), NULL, &err ));
 	if( err < 0 ) { perror("Could not create int buffer."); exit(1); }
-	input.back().push_back( clCreateBuffer(cle->getContext(), CL_MEM_READ_ONLY, sizeof(cl_int), NULL, &err ));
-	if( err < 0 ) { perror("Could not create int buffer."); exit(1); }
-	input.back().push_back( clCreateBuffer(cle->getContext(), CL_MEM_READ_ONLY, sizeof(cl_int), NULL, &err ));
-	if( err < 0 ) { perror("Could not create int buffer."); exit(1); }
-	input.back().push_back( clCreateBuffer(cle->getContext(), CL_MEM_READ_ONLY, sizeof(cl_int), NULL, &err ));
-	if( err < 0 ) { perror("Could not create int buffer."); exit(1); }
-	input.back().push_back( clCreateBuffer(cle->getContext(), CL_MEM_READ_ONLY, sizeof(cl_int), NULL, &err ));
-	if( err < 0 ) { perror("Could not create int buffer."); exit(1); }
-	input.back().push_back( clCreateBuffer(cle->getContext(), CL_MEM_READ_WRITE, sizeof(cl_float), NULL, &err ));
-	if( err < 0 ) { perror("Could not create int buffer."); exit(1); }
+
+	backBuffer = createMemObj();
 }
 
-ChunkEngine::~ChunkEngine() { }
+ChunkEngine::~ChunkEngine() { 
+	int err = clReleaseMemObject(backBuffer);
+	if( err < 0 ) { perror("Could not release backBuffer."); fprintf(stderr,"%i\n",err); exit(1); }
+}
 
 
 //Probably don't need the TEXTUREACCESS_TARGET for access in opencl.
-bool ChunkEngine::Init(SDL_Texture * bgTex) {
-	Uint32 fmt;
-	int acc;
-	SDL_QueryTexture(bgTex, &fmt, &acc, NULL, NULL);
-//	fprintf(stderr, "fmt: %u\nacc: %i\n", fmt, acc);
+cl_mem ChunkEngine::createMemObj(Chunk * c) {
+	if( c )
+		const int CHUNK_SIZE = c->CHUNK_SIZE;
+	else
+		const int CHUNK_SIZE = 16;
 
-//Makes sure init texture can be used for rendering by SDL.
-	if( acc != SDL_TEXTUREACCESS_TARGET )
-		return false;
+	cl_image_format cif;
+	cif.image_channel_order = CL_RGBA;
+	cif.image_channel_data_type = CL_FLOAT;
 
-	TextureProperty tp = getTexId(bgTex);
-
-//	fprintf(stderr, "tid: %i\nttype: %i\n", tp.tid, tp.ttype );
-	//Need to use clCreateFromGLTexture()
-	//Then enum in return from getTexId can be used.
+	cl_image_desc cid;
+	cid.image_type = CL_MEM_OBJECT_IMAGE3D;
+	cid.image_width = CHUNK_SIZE;
+	cid.image_height = CHUNK_SIZE;
+	cid.image_depth = CHUNK_SIZE;
+	cid.image_array_size = 1;
+	cid.image_row_pitch = 0;
+	cid.image_slice_pitch = 0
+	cid.num_mip_levels = 0;
+	cid.num_samples = 0;
+	cid.buffer = NULL;
 
 	int err;
-	input.back().push_back( clCreateFromGLTexture2D(cle->getContext(), CL_MEM_READ_WRITE, tp.ttype, 0, tp.tid, &err) );
-	if( err < 0 ) { fprintf(stderr, "%i\n", err); perror("Could not create texture buffer."); exit(1); }
-	return true;
+	cl_mem ret = clCreateImage(cle->getContext(), CL_MEM_READ_WRITE, &cif, &cid, c->getPtr(), &err);
+	if( err < 0 ) { fprintf(stderr, "%i\n", err); perror("Could not create 3d image buffer."); exit(1); }
+
+	return ret;
 }
 
 void ChunkEngine::addTexture(SDL_Texture * newTex) {
@@ -58,95 +65,68 @@ void ChunkEngine::Step(void * in) {
 
 	int err;
 
-	wePasser * wp = (wePasser *) in;
-	Sprite * spr = wp->obj->curSprite();
-	SDL_Texture * rendtex = wp->rendtex;
-	int wpos = wp->obj->getX();
-	int hpos = wp->obj->getY();
-	int w = spr->getWFrame();
-	int h = spr->getHFrame();
-	int spriteFrame = spr->getFrame();
-	float movMod = wp->movMod;
+	cePasser * cp = (cePasser *) in;
 
-	cl_mem sprCL = spr->getCL();
+//globalNum should be based off CHUNK_SIZE instead	
+	size_t globalNum[3];
+	size_t localNum[3];
+	for( int i=0; i<3; i++) {
+		globalNum[i] = 16;
+		localNum[i] = 8;
 
-	int wgs = cle->getWorkGroupSize();
+		if( globalNum[i] < localNum[i] )
+			localNum[i] = globalNum[i];
+		else
+			globalNum[i] += globalNum[i] % 8;
+	}
 
-	size_t globalNum[2];
-	globalNum[0] = w;
-	globalNum[1] = h;
-	size_t localNum[2];
-	localNum[0] = 8;
-	localNum[1] = 8;
-	if( globalNum[0] < localNum[0] )
-		localNum[0] = globalNum[0];
-	else
-		globalNum[0] += globalNum[0] % 8;
-	if( globalNum[1] < localNum[1] )
-		localNum[1] = globalNum[1];
-	else
-		globalNum[1] += globalNum[1] % 8;
+	cl_kernel kernel;
 
-	const size_t numGroups = (globalNum[0]/localNum[0])*(globalNum[1]/localNum[1]);
-
-	cl_kernel kernel = kernels[0];
-
-	cl_mem commBuf = clCreateBuffer( cle->getContext(), CL_MEM_READ_WRITE, 4*sizeof(cl_float)*numGroups, NULL, &err);
-	if(err != CL_SUCCESS) { perror("Error creating commBuf."); fprintf(stderr, "%i\n", err); exit(1); }
-
-//Added input buffers because the commented kernel args would segfault on second loop.
-	err = clEnqueueWriteBuffer(cle->getQueue(), input[0][0], CL_FALSE, 0, sizeof(int), &wpos, 0, NULL, NULL);
-	if(err != CL_SUCCESS) { perror("Error writing int."); exit(1); }
-	err = clEnqueueWriteBuffer(cle->getQueue(), input[0][1], CL_FALSE, 0, sizeof(int), &hpos, 0, NULL, NULL);
-	if(err != CL_SUCCESS) { perror("Error writing int."); exit(1); }
-	err = clEnqueueWriteBuffer(cle->getQueue(), input[0][2], CL_FALSE, 0, sizeof(int), &w, 0, NULL, NULL);
-	if(err != CL_SUCCESS) { perror("Error writing int."); exit(1); }
-	err = clEnqueueWriteBuffer(cle->getQueue(), input[0][3], CL_FALSE, 0, sizeof(int), &h, 0, NULL, NULL);
-	if(err != CL_SUCCESS) { perror("Error writing int."); exit(1); }
-	err = clEnqueueWriteBuffer(cle->getQueue(), input[0][4], CL_FALSE, 0, sizeof(int), &spriteFrame, 0, NULL, NULL);
-	if(err != CL_SUCCESS) { perror("Error writing int."); exit(1); }
-	err = clEnqueueWriteBuffer(cle->getQueue(), input[0][5], CL_FALSE, 0, sizeof(float), &movMod, 0, NULL, NULL);
-	if(err != CL_SUCCESS) { perror("Error writing float."); exit(1); }
-
-//	fprintf(stderr, "%i objects in input\n", input[0].size());
-fprintf(stderr,"rendtex");
-	err = clEnqueueAcquireGLObjects(cle->getQueue(), 1, &input[0][6], 0, NULL, NULL);
-	if(err != CL_SUCCESS) { perror("Error acquiring GL Objects."); exit(1); }
-fprintf(stderr,"obj[focus]: %i\n", sprCL);
-	err = clEnqueueAcquireGLObjects(cle->getQueue(), 1, &sprCL, 0, NULL, NULL);
-	if(err != CL_SUCCESS) { perror("Error acquiring GL Objects."); exit(1); }
-
-	
-	err  = clSetKernelArg(kernel, 0, sizeof(cl_mem), &input[0][0]);
-	err |= clSetKernelArg(kernel, 1, sizeof(cl_mem), &input[0][1]);
-	err |= clSetKernelArg(kernel, 2, sizeof(cl_mem), &input[0][2]);
-	err |= clSetKernelArg(kernel, 3, sizeof(cl_mem), &input[0][3]);
-	err |= clSetKernelArg(kernel, 4, sizeof(cl_mem), &input[0][4]);
-	err |= clSetKernelArg(kernel, 5, sizeof(cl_mem), &input[0][5]);
-	err |= clSetKernelArg(kernel, 6, sizeof(cl_mem), &input[0][6]);
-	err |= clSetKernelArg(kernel, 7, sizeof(cl_mem), &sprCL);
-
-	err |= clSetKernelArg(kernel, 8, localNum[0]*localNum[1]*4*sizeof(cl_float), NULL);
-	err |= clSetKernelArg(kernel, 9, sizeof(cl_mem), &commBuf);
-
+//May not need to use this to clear backBuffer.
+	kernel = kernels[0];
+	err  = clSetKernelArg(kernel, 0, sizeof(cl_mem), &backBuffer);
 	if(err != CL_SUCCESS) { perror("Error setting kernel0 arguments."); fprintf(stderr, "%i\n", err); exit(1); }
-		
-	err = clEnqueueNDRangeKernel(cle->getQueue(), kernel, 2, NULL, globalNum, localNum, 0, NULL, NULL);
+	err = clEnqueueNDRangeKernel(cle->getQueue(), kernel, 3, NULL, globalNum, localNum, 0, NULL, NULL);
 	if(err != CL_SUCCESS) { perror("Error queuing kernel0 for execution."); fprintf(stderr, "%i\n", err); exit(1); }
 
-	err = clEnqueueReadBuffer(cle->getQueue(), input[0][5], CL_FALSE, 0, sizeof(cl_float), &movMod, 0, NULL, NULL);
+	kernel = kernels[1];
+	cl_mem clSideOut = clCreateBuffer( cle->getContext(), CL_MEM_READ_WRITE, 6*sizeof(cl_int), NULL, &err);
+	if(err != CL_SUCCESS) { perror("Error creating clSideOut buffer."); fprintf(stderr, "%i\n", err); exit(1); }
+	err  = clSetKernelArg(kernel, 0, sizeof(cl_mem), cp->focus);
+	err |= clSetKernelArg(kernel, 1, sizeof(cl_mem), &backBuffer);
+	err |= clSetKernelArg(kernel, 2, sizeof(cl_mem), &clSideOut);
+	if(err != CL_SUCCESS) { perror("Error setting kernel1 arguments."); fprintf(stderr, "%i\n", err); exit(1); }
+
+	err = clEnqueueNDRangeKernel(cle->getQueue(), kernel, 3, NULL, globalNum, localNum, 0, NULL, NULL);
+	if(err != CL_SUCCESS) { perror("Error queuing kernel0 for execution."); fprintf(stderr, "%i\n", err); exit(1); }
+
+	int sideOut[6];
+	err = clEnqueueReadBuffer(cle->getQueue(), clSideOut, CL_TRUE, 0, sizeof(cl_float), sideOut, 0, NULL, NULL);
 	if(err != CL_SUCCESS) { perror("Error reading CL's movMod."); fprintf(stderr, "%i\n", err); exit(1); }
 
-	err = clEnqueueReleaseGLObjects(cle->getQueue(), 1, &input[0][6], 0, NULL, NULL);
-	if(err != CL_SUCCESS) { perror("Error releasing GL Objects."); fprintf(stderr, "%i\n", err); exit(1); }
-	err = clEnqueueReleaseGLObjects(cle->getQueue(), 1, &sprCL, 0, NULL, NULL);
-	if(err != CL_SUCCESS) { perror("Error releasing GL Objects."); fprintf(stderr, "%i\n", err); exit(1); }
+	kernel = kernels[2];
 
+	for( int i=0; i<6; i++ ){
+		if( sideOut[i] == 0 )
+			continue;
+		sideOut[i] = i;
+		clEnqueueWriteBuffer(cle->getQueue(), clSideOut, CL_FALSE, 0, sizeof(cl_int), &sideOut[i], 0, NULL, NULL);
+		if(err != CL_SUCCESS) { perror("Error writing dir int."); exit(1); }
+	
+		err  = clSetKernelArg(kernel, 0, sizeof(cl_mem), &input[0][0]);
+		err |= clSetKernelArg(kernel, 1, sizeof(cl_mem), &input[0][1]);
+		err |= clSetKernelArg(kernel, 2, sizeof(cl_mem), &input[0][2]);
+		err |= clSetKernelArg(kernel, 3, sizeof(cl_mem), &input[0][3]);
+		err |= clSetKernelArg(kernel, 4, sizeof(cl_mem), &clSideOut);
+
+		if(err != CL_SUCCESS) { perror("Error setting kernel2 arguments."); fprintf(stderr, "%i\n", err); exit(1); }
+
+		err = clEnqueueNDRangeKernel(cle->getQueue(), kernel, 3, NULL, globalNum, localNum, 0, NULL, NULL);
+		if(err != CL_SUCCESS) { perror("Error queuing kernel0 for execution."); fprintf(stderr, "%i\n", err); exit(1); }
+	}
 
 	clFinish(cle->getQueue());
-	clReleaseMemObject(commBuf);
-
-	wp->movMod = movMod;
+	clReleaseMemObject(clSideOut);
 }
 
 

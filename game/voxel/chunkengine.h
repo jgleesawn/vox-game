@@ -1,27 +1,26 @@
 #ifndef CHUNKENGINE_H
 #define CHUNKENGINE_H
 
-#include <SDL2/SDL.h>
 #include <CL/opencl.h>
 
 #include <string>
 #include <vector>
 
 #include "clengine/physicsengine.h"
-#include "object/object.h"
+#include "chunk.h"
 
-struct wePasser {
-	SDL_Texture * rendtex;
-	Object * obj;
-	float movMod;
+struct cePasser {
+	cl_mem * focus;
+	cl_mem * surrounding;
 };
 
 class ChunkEngine : public PhysicsEngine {
+	cl_mem backBuffer;
 public:
 	ChunkEngine(CLEngine * cle_in=NULL);
 	~ChunkEngine();
 
-	bool Init(SDL_Texture *);
+	cl_mem createMemObj(Chunk * c = NULL);
 
 	void addTexture(SDL_Texture *);
 

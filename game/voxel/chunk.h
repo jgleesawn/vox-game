@@ -7,7 +7,7 @@
 typedef float (*DistributionFunction)(vec4<float>);
 
 class Chunk {
-	Block** m_Blocks;
+	Block*** m_Blocks;
 //	CLEngine * cle;
 //	ChunkEngine ce;
 public:
@@ -17,6 +17,7 @@ public:
 	static const int CHUNK_SIZE = 16;
 
 	void setDistribution(vec4<float>, DistributionFunction);
+	const Block** getPtr() { return m_Blocks; }
 };
 
 float distalDist( vec4<float> pos ) {
