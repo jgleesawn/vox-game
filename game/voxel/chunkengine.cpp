@@ -3,14 +3,8 @@
 ChunkEngine::ChunkEngine(CLEngine * cle_in) : PhysicsEngine("game/voxel/physics.cl", cle_in) { 
 	int err;
 	LoadKernel("clearBuffer");
-
 	LoadKernel("ChunkKernel");
-	input.back().push_back( clCreateBuffer(cle->getContext(), CL_MEM_READ_WRITE, 6*sizeof(cl_int), NULL, &err ));
-	if( err < 0 ) { perror("Could not create int buffer."); exit(1); }
-
 	LoadKernel("InterChunkKernel");
-	input.back().push_back( clCreateBuffer(cle->getContext(), CL_MEM_READ_ONLY, sizeof(cl_int), NULL, &err ));
-	if( err < 0 ) { perror("Could not create int buffer."); exit(1); }
 
 	backBuffer = createMemObj();
 }
@@ -23,10 +17,11 @@ ChunkEngine::~ChunkEngine() {
 
 //Probably don't need the TEXTUREACCESS_TARGET for access in opencl.
 cl_mem ChunkEngine::createMemObj(Chunk * c) {
-	if( c )
-		const int CHUNK_SIZE = c->CHUNK_SIZE;
-	else
-		const int CHUNK_SIZE = 16;
+//For use with dynamic CHUNK_SIZE
+//	if( c )
+//		const int CHUNK_SIZE = c->CHUNK_SIZE;
+//	else
+//		const int CHUNK_SIZE = 16;
 
 	cl_image_format cif;
 	cif.image_channel_order = CL_RGBA;
@@ -44,20 +39,20 @@ cl_mem ChunkEngine::createMemObj(Chunk * c) {
 	cid.num_samples = 0;
 	cid.buffer = NULL;
 
+
+	cl_mem_flags flags = CL_MEM_READ_WRITE;
+	Block *** ptr = NULL;
+	if( c != NULL ) {
+		flags |= CL_MEM_COPY_HOST_PTR;
+		ptr = c->getPtr();
+	}
+		
 	int err;
-	cl_mem ret = clCreateImage(cle->getContext(), CL_MEM_READ_WRITE, &cif, &cid, c->getPtr(), &err);
+//if it breaks, its probably the pointer.
+	cl_mem ret = clCreateImage(cle->getContext(), flags, &cif, &cid, ptr, &err);
 	if( err < 0 ) { fprintf(stderr, "%i\n", err); perror("Could not create 3d image buffer."); exit(1); }
 
 	return ret;
-}
-
-void ChunkEngine::addTexture(SDL_Texture * newTex) {
-	TextureProperty tp = getTexId(newTex);
-//	fprintf(stderr, "tid: %i\nttype: %i\n", tp.tid, tp.ttype );
-
-	int err;
-	input.back().push_back( clCreateFromGLTexture2D(cle->getContext(), CL_MEM_READ_WRITE, tp.ttype, 0, tp.tid, &err) );
-	if( err < 0 ) { fprintf(stderr, "%i\n", err); perror("Could not create texture buffer."); exit(1); }
 }
 
 void ChunkEngine::Step(void * in) {
@@ -104,25 +99,48 @@ void ChunkEngine::Step(void * in) {
 	err = clEnqueueReadBuffer(cle->getQueue(), clSideOut, CL_TRUE, 0, sizeof(cl_float), sideOut, 0, NULL, NULL);
 	if(err != CL_SUCCESS) { perror("Error reading CL's movMod."); fprintf(stderr, "%i\n", err); exit(1); }
 
-	kernel = kernels[2];
+	cl_mem temp = backBuffer;
+	backBuffer = cp->focus;
+	cp->focus = temp;
 
+	kernel = kernels[2];
+	size_t ctrOrigin[3];
+	size_t adjOrigin[3];
+	size_t region[3];
 	for( int i=0; i<6; i++ ){
 		if( sideOut[i] == 0 )
 			continue;
 		sideOut[i] = i;
 		clEnqueueWriteBuffer(cle->getQueue(), clSideOut, CL_FALSE, 0, sizeof(cl_int), &sideOut[i], 0, NULL, NULL);
 		if(err != CL_SUCCESS) { perror("Error writing dir int."); exit(1); }
-	
-		err  = clSetKernelArg(kernel, 0, sizeof(cl_mem), &input[0][0]);
-		err |= clSetKernelArg(kernel, 1, sizeof(cl_mem), &input[0][1]);
-		err |= clSetKernelArg(kernel, 2, sizeof(cl_mem), &input[0][2]);
-		err |= clSetKernelArg(kernel, 3, sizeof(cl_mem), &input[0][3]);
+
+//using backBuffer for both because each will write to the opposite sides of it.
+//will not have overwritten data.	
+		err  = clSetKernelArg(kernel, 0, sizeof(cl_mem), &cp->focus);
+		err |= clSetKernelArg(kernel, 1, sizeof(cl_mem), &backBuffer);
+		err |= clSetKernelArg(kernel, 2, sizeof(cl_mem), &cp->surrounding[i]);
+		err |= clSetKernelArg(kernel, 3, sizeof(cl_mem), &backBuffer);
 		err |= clSetKernelArg(kernel, 4, sizeof(cl_mem), &clSideOut);
 
 		if(err != CL_SUCCESS) { perror("Error setting kernel2 arguments."); fprintf(stderr, "%i\n", err); exit(1); }
 
 		err = clEnqueueNDRangeKernel(cle->getQueue(), kernel, 3, NULL, globalNum, localNum, 0, NULL, NULL);
 		if(err != CL_SUCCESS) { perror("Error queuing kernel0 for execution."); fprintf(stderr, "%i\n", err); exit(1); }
+
+		for( int j=0; j<3; j++ ) {
+			if( j == i/2 ) {
+				region[j] = 1;
+				ctrOrigin[j] = (i%2)*(CHUNK_SIZE-1);
+				adjOrigin[j] = ((i+1)%2)*(CHUNK_SIZE-1);
+			} else {
+				region[j] = CHUNK_SIZE;
+				ctrOrigin[j] = 0;
+				adjOrigin[j] = 0;
+			}
+		}
+		
+		err = clEnqueueCopyImage(cle->getQueue(), backBuffer, cp->focus, ctrOrigin, ctrOrigin, region, 0, NULL, NULL);
+		err = clEnqueueCopyImage(cle->getQueue(), backBuffer, &cp->surrounding[i], adjOrigin, adjOrigin, region, 0, NULL, NULL);
 	}
 
 	clFinish(cle->getQueue());

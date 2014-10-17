@@ -14,15 +14,16 @@ struct cePasser {
 	cl_mem * surrounding;
 };
 
+//fix static CHUNK_SIZE;
 class ChunkEngine : public PhysicsEngine {
 	cl_mem backBuffer;
 public:
 	ChunkEngine(CLEngine * cle_in=NULL);
 	~ChunkEngine();
 
-	cl_mem createMemObj(Chunk * c = NULL);
+	static const int CHUNK_SIZE = 16;
 
-	void addTexture(SDL_Texture *);
+	cl_mem createMemObj(Chunk * c = NULL);
 
 	void Step(void *);
 };
